@@ -7,8 +7,6 @@
 
 #include "epd_driver.h"
 
-#ifdef USE_ESP32_FRAMEWORK_ARDUINO
-
 namespace esphome {
 namespace t547 {
 
@@ -64,5 +62,3 @@ class T547 : public PollingComponent, public display::DisplayBuffer {
 
 }  // namespace T547
 }  // namespace esphome
-
-#endif  // USE_ESP32_FRAMEWORK_ARDUINO

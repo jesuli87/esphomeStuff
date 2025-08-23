@@ -4,8 +4,15 @@
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/core/hal.h"
 
-#include <driver/adc.h>
+//#include <driver/adc.h>
+//Removed above to resolve Wire Compile errors
+//Added below for same reason
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_continuous.h"
+#include "esp_adc/adc_cali_scheme.h"
+#include "esp_adc/adc_cali.h"
 #include "esp_adc_cal.h"
+//End of additions
 
 #ifndef EPD_DRIVER
 #define EPD_DRIVER
