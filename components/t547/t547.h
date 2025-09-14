@@ -5,7 +5,7 @@
 #include "esphome/core/version.h"
 #include "esphome/components/display/display_buffer.h"
 
-#include <epd_driver.h>
+#include "epd_driver.h"
 
 namespace esphome {
 namespace t547 {
