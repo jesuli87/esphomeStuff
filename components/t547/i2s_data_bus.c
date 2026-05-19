@@ -421,7 +421,9 @@ void i2s_deinit()
     free((void *)i2s_state.dma_desc_a);
     free((void *)i2s_state.dma_desc_b);
 
+#if USER_I2S_REG
     periph_module_disable(PERIPH_I2S1_MODULE);
+#endif
 }
 
 /******************************************************************************/
