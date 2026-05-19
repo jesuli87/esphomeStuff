@@ -28,7 +28,6 @@ CONFIG_SCHEMA = cv.All(
     )
     .extend(cv.polling_component_schema("5s")),
     cv.has_at_most_one_key(CONF_PAGES, CONF_LAMBDA),
-    cv.only_with_arduino,
 )
 
 
@@ -48,6 +47,3 @@ async def to_code(config):
     cg.add(var.set_greyscale(config[CONF_GREYSCALE]))
 
     cg.add_build_flag("-DBOARD_HAS_PSRAM")
-
-    # cg.add_library("Wire", version="3.2.1")  # required by LilyGoEPD47 can be removed when ep
-    cg.add_library("LilyGoEPD47", repository="https://github.com/Xinyuan-LilyGO/LilyGo-EPD47", version="v0.3.0")

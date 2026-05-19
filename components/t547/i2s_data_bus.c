@@ -5,15 +5,20 @@
 
 #include "i2s_data_bus.h"
 
-#include <driver/periph_ctrl.h>
 #include <esp_heap_caps.h>
-#include <rom/lldesc.h>
-#include <soc/i2s_reg.h>
-#include <soc/i2s_struct.h>
-#include <soc/rtc.h>
+#include <rom/lldesc.h>  // lldesc_t used in i2s_parallel_state_t struct
 #include "esp_lcd_panel_io.h"
 #include "esp_err.h"
 #include "esp_log.h"
+
+// These headers are only used in the legacy direct-I2S-register path (USER_I2S_REG=1).
+// driver/periph_ctrl.h and soc/i2s_*.h were removed/relocated in ESP-IDF 5.x.
+#if USER_I2S_REG
+#include <driver/periph_ctrl.h>
+#include <soc/i2s_reg.h>
+#include <soc/i2s_struct.h>
+#include <soc/rtc.h>
+#endif
 
 /******************************************************************************/
 /***        macro definitions                                               ***/

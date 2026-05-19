@@ -2,9 +2,8 @@
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
 #include "esphome/core/helpers.h"
-#ifdef USE_ESP32_FRAMEWORK_ARDUINO
 
-#include <esp32-hal-gpio.h>
+#include <esp_heap_caps.h>
 
 namespace esphome {
 namespace t547 {
@@ -20,7 +19,7 @@ void T547::setup() {
     free(this->buffer_);  // NOLINT
   }
 
-  this->buffer_ = (uint8_t *) ps_malloc(buffer_size);
+  this->buffer_ = (uint8_t *) heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
 
   if (this->buffer_ == nullptr) {
     ESP_LOGE(TAG, "Could not allocate buffer for display!");
@@ -84,5 +83,3 @@ void T547::display() {
 
 }  // namespace T547
 }  // namespace esphome
-
-#endif  // USE_ESP32_FRAMEWORK_ARDUINO
