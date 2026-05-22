@@ -373,9 +373,17 @@ void i2s_bus_init(i2s_bus_config *cfg)
 
     ESP_LOGI(TAG, "Initialize Intel 8080 bus");
     esp_lcd_i80_bus_handle_t i80_bus = NULL;
+    esp_err_t ret;
+
+    // Try clock sources in order: XTAL first, then PLL160M as fallback.
+    // ESP-IDF 5.5.4 on ESP32-S3: LCD_CLK_SRC_PLL160M (value 21) is rejected by
+    // esp_clk_tree_src_get_freq_hz at runtime with "unknown clk src".
+    // XTAL (40MHz) is always available and sufficient for 10MHz pclk.
+    lcd_clock_source_t clk_sources[] = {LCD_CLK_SRC_XTAL, LCD_CLK_SRC_PLL160M};
     esp_lcd_i80_bus_config_t bus_config = {
         .dc_gpio_num = cfg->start_pulse,
         .wr_gpio_num = cfg->clock,
+        .clk_src = LCD_CLK_SRC_PLL160M,
         .data_gpio_nums = {
             cfg->data_6,
             cfg->data_7,
@@ -389,7 +397,21 @@ void i2s_bus_init(i2s_bus_config *cfg)
         .bus_width = 8,
         .max_transfer_bytes = (cfg->epd_row_width + 32)/4
     };
-    ESP_ERROR_CHECK(esp_lcd_new_i80_bus(&bus_config, &i80_bus));
+
+    for (int i = 0; i < 2; i++) {
+        bus_config.clk_src = clk_sources[i];
+        ESP_LOGI(TAG, "Trying clk_src %d for I80 bus...", (int)clk_sources[i]);
+        ret = esp_lcd_new_i80_bus(&bus_config, &i80_bus);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "I80 bus init OK with clk_src %d", (int)clk_sources[i]);
+            break;
+        }
+        ESP_LOGW(TAG, "I80 bus init failed with clk_src %d: %s", (int)clk_sources[i], esp_err_to_name(ret));
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I80 bus init failed with all clock sources - display will not work");
+        return;
+    }
 
     esp_lcd_panel_io_i80_config_t io_config = {
         .cs_gpio_num = -1,
@@ -405,9 +427,13 @@ void i2s_bus_init(i2s_bus_config *cfg)
         .user_ctx = NULL,
         .lcd_cmd_bits = 10,
         .lcd_param_bits = 0,
-        // .flags.reverse_color_bits = 1
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i80(i80_bus, &io_config, &io_handle));
+    ret = esp_lcd_new_panel_io_i80(i80_bus, &io_config, &io_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Panel IO init failed: %s - display will not work", esp_err_to_name(ret));
+        return;
+    }
+    ESP_LOGI(TAG, "Intel 8080 bus and panel IO initialized successfully (v2).");
 }
 #endif
 
