@@ -16,8 +16,9 @@ void T547::setup() {
   ESP_LOGI(TAG, "Free internal heap before init: %u bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
   ESP_LOGI(TAG, "Calling epd_init...");
-  epd_init();
-  ESP_LOGI(TAG, "epd_init complete");
+  // DIAGNOSTIC: temporarily skip epd_init to check if it causes the crash
+  // epd_init();
+  ESP_LOGI(TAG, "epd_init skipped for diagnostic");
 
   uint32_t buffer_size = this->get_buffer_length_();
   ESP_LOGI(TAG, "Allocating display buffer: %u bytes from SPIRAM", buffer_size);
