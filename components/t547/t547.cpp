@@ -11,9 +11,16 @@ namespace t547 {
 static const char *const TAG = "t574";
 
 void T547::setup() {
-  ESP_LOGV(TAG, "Initialize called");
+  ESP_LOGI(TAG, "Initialize called");
+  ESP_LOGI(TAG, "Free SPIRAM before init: %u bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+  ESP_LOGI(TAG, "Free internal heap before init: %u bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+
+  ESP_LOGI(TAG, "Calling epd_init...");
   epd_init();
+  ESP_LOGI(TAG, "epd_init complete");
+
   uint32_t buffer_size = this->get_buffer_length_();
+  ESP_LOGI(TAG, "Allocating display buffer: %u bytes from SPIRAM", buffer_size);
 
   if (this->buffer_ != nullptr) {
     free(this->buffer_);  // NOLINT
@@ -22,13 +29,13 @@ void T547::setup() {
   this->buffer_ = (uint8_t *) heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
 
   if (this->buffer_ == nullptr) {
-    ESP_LOGE(TAG, "Could not allocate buffer for display!");
+    ESP_LOGE(TAG, "Could not allocate buffer for display! Free SPIRAM: %u", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     this->mark_failed();
     return;
   }
 
   memset(this->buffer_, 0xFF, buffer_size);
-  ESP_LOGV(TAG, "Initialize complete");
+  ESP_LOGI(TAG, "Initialize complete, buffer at %p", this->buffer_);
 }
 
 float T547::get_setup_priority() const { return setup_priority::PROCESSOR; }
