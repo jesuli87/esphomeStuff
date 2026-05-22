@@ -375,8 +375,10 @@ void i2s_bus_init(i2s_bus_config *cfg)
     esp_lcd_i80_bus_handle_t i80_bus = NULL;
     esp_err_t ret;
 
-    // Try PLL160M first, fall back to XTAL if unavailable
-    lcd_clock_source_t clk_sources[] = {LCD_CLK_SRC_PLL160M, LCD_CLK_SRC_XTAL};
+    // Try clock sources in order: PLL160M -> APB (80MHz) -> XTAL
+    // ESP-IDF 5.x on ESP32-S3: LCD_CLK_SRC_PLL160M may not be recognized by esp_clk_tree;
+    // LCD_CLK_SRC_APB is the most universally supported option.
+    lcd_clock_source_t clk_sources[] = {LCD_CLK_SRC_PLL160M, LCD_CLK_SRC_APB, LCD_CLK_SRC_XTAL};
     esp_lcd_i80_bus_config_t bus_config = {
         .dc_gpio_num = cfg->start_pulse,
         .wr_gpio_num = cfg->clock,
@@ -395,7 +397,7 @@ void i2s_bus_init(i2s_bus_config *cfg)
         .max_transfer_bytes = (cfg->epd_row_width + 32)/4
     };
 
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         bus_config.clk_src = clk_sources[i];
         ESP_LOGI(TAG, "Trying clk_src %d for I80 bus...", (int)clk_sources[i]);
         ret = esp_lcd_new_i80_bus(&bus_config, &i80_bus);
