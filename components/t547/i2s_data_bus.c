@@ -433,7 +433,7 @@ void i2s_bus_init(i2s_bus_config *cfg)
         ESP_LOGE(TAG, "Panel IO init failed: %s - display will not work", esp_err_to_name(ret));
         return;
     }
-    ESP_LOGI(TAG, "Intel 8080 bus and panel IO initialized successfully");
+    ESP_LOGI(TAG, "Intel 8080 bus and panel IO initialized successfully (v2).");
 }
 #endif
 
