@@ -376,6 +376,7 @@ void i2s_bus_init(i2s_bus_config *cfg)
     esp_lcd_i80_bus_config_t bus_config = {
         .dc_gpio_num = cfg->start_pulse,
         .wr_gpio_num = cfg->clock,
+        .clk_src = LCD_CLK_SRC_PLL160M,
         .data_gpio_nums = {
             cfg->data_6,
             cfg->data_7,
