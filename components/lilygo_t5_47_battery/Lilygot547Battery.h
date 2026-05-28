@@ -3,9 +3,10 @@
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/core/hal.h"
 
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
+// Use the legacy driver ADC API — available via the 'driver' IDF component which
+// is always a dependency in ESPHome builds. Avoids needing an explicit esp_adc
+// component declaration that the external-component CMake setup doesn't propagate.
+#include "driver/adc.h"
 
 #ifndef EPD_DRIVER
 #define EPD_DRIVER
@@ -25,10 +26,9 @@ class Lilygot547Battery : public PollingComponent {
   void set_voltage_sensor(sensor::Sensor *voltage_sensor) { voltage = voltage_sensor; }
 
  protected:
-  adc_oneshot_unit_handle_t adc_handle_{nullptr};
-  adc_cali_handle_t cali_handle_{nullptr};
-  bool calibrated_{false};
   bool init_ok_{false};
+  // Last successfully read raw value — retained across WiFi-conflict skips.
+  int last_raw_{-1};
 };
 
 }  // namespace lilygo_t5_47_battery

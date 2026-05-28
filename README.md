@@ -63,7 +63,12 @@ display:
 
 ## `lilygo_t5_47_battery` — Battery monitor
 
-Battery voltage monitor component. **Not recommended for use with the T5 4.7" S3**: GPIO15 (ADC input) conflicts with the display driver hardware on this board variant, causing the device to hang silently. Disable the battery sensor and return `NAN` from a template sensor instead.
+Reads battery voltage on the LilyGo T5 4.7" S3 via GPIO14.
+
+**Hardware constraints**:
+- GPIO14 on ESP32-S3 is **ADC2 channel 3** (GPIO1–10 = ADC1, GPIO11–20 = ADC2).
+- ADC2 conflicts with WiFi on ESP32-S3: `adc2_get_raw()` returns `ESP_ERR_INVALID_STATE` while WiFi is active. The component handles this gracefully — readings are skipped (last known value retained) rather than publishing NAN.
+- In practice the device is almost always WiFi-connected, so voltage is read at boot before WiFi fully initialises and then not updated again until the next boot cycle. Battery level changes slowly enough that this is acceptable.
 
 ---
 

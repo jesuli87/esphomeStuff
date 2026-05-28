@@ -33,7 +33,3 @@ async def to_code(config):
     if CONF_VOLTAGE in config:
         sens = await sensor.new_sensor(config[CONF_VOLTAGE])
         cg.add(var.set_voltage_sensor(sens))
-
-    # esp_adc is a separate IDF component in ESP-IDF 5.x — declare it so the
-    # build system adds its include paths (adc_oneshot.h, adc_cali.h, etc.)
-    cg.add_library("idf::esp_adc", None)
