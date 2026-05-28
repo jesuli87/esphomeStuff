@@ -8,10 +8,13 @@
 // component declaration that the external-component CMake setup doesn't propagate.
 #include "driver/adc.h"
 
-#ifndef EPD_DRIVER
-#define EPD_DRIVER
-#include "epd_driver.h"
-#endif
+// Forward-declare the EPD power functions from the t547 component.
+// epd_driver.h is not on the include path for this component, but the symbols
+// are available at link time because t547 is compiled into the same firmware.
+extern "C" {
+  void epd_poweron();
+  void epd_poweroff();
+}
 
 namespace esphome {
 namespace lilygo_t5_47_battery {
