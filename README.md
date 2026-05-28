@@ -144,3 +144,32 @@ substitutions:
 | Flash | 16 MB |
 | Display | 960 × 540 grayscale e-paper |
 | Deep sleep wakeup | Timer only — do not use `esp32_ext1_wakeup` on GPIO21; it is pulled high by hardware and will cause immediate re-wakeup on every sleep cycle |
+
+### Deep sleep: EXT1 wakeup persists and re-enables across cycles
+
+**Root cause 1 — RTC register persistence**: Removing `esp32_ext1_wakeup` from the ESPHome YAML is not sufficient if the device was previously flashed with EXT1 configured. The ESP32 stores wakeup configuration in the RTC domain, which survives deep sleep cycles and software resets (OTA). A power-on reset clears it, but that is not guaranteed during normal OTA updates.
+
+**Root cause 2 — ESPHome's `begin_sleep()` path**: Even after calling `esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1)` in the `enter_deep_sleep` script, wakeup cause 3 (EXT1) returns on every cycle after the first. Something inside ESPHome's `begin_sleep()` shutdown sequence (WiFi teardown, shutdown callbacks, etc.) was re-enabling EXT1 between the disable call and the actual `esp_deep_sleep_start()`.
+
+**Symptom**: device wakes with cause 3 within seconds of every sleep entry — or works for exactly one cycle then reverts to cause 3.
+
+**Fix**: bypass `deep_sleep.enter` entirely. Call `esp_deep_sleep_start()` directly from a lambda so nothing runs between the disable and the actual sleep:
+
+```cpp
+// In enter_deep_sleep script — final lambda, nothing after this runs:
+esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1);
+esp_sleep_enable_timer_wakeup((uint64_t)sleep_duration_us);
+esp_deep_sleep_start();
+```
+
+Diagnostic sensors that `on_shutdown` would normally update must be explicitly called with `component.update` earlier in the same script before the sleep lambda. `esp_deep_sleep_start()` handles WiFi power-down internally so no explicit WiFi stop is needed.
+
+---
+
+## Planned improvements
+
+| # | Area | Description |
+|---|---|---|
+| 1 | Deep sleep | Sleep durations (`deep_sleep_duration`, `night_time_deep_sleep_duration`) configurable from HA instead of hardcoded YAML substitutions |
+| 2 | Calendar data | Calendar display names configurable from HA (currently hardcoded in `CALENDAR_NAMES` dict in the pyscript) |
+| 3 | Calendar mini-grid | Day dots should show a rolling window of X days forward instead of only the current calendar month |

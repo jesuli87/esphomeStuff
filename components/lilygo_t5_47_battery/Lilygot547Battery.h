@@ -1,23 +1,15 @@
 #pragma once
-#include <Arduino.h>
 #include "esphome/core/component.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/core/hal.h"
 
-//#include <driver/adc.h>
-//Removed above to resolve Wire Compile errors
-//Added below for same reason
 #include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_continuous.h"
-#include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_cali.h"
-#include "esp_adc_cal.h"
-//End of additions
+#include "esp_adc/adc_cali_scheme.h"
 
 #ifndef EPD_DRIVER
 #define EPD_DRIVER
 #include "epd_driver.h"
-#include "epd_highlevel.h"
 #endif
 
 namespace esphome {
@@ -27,13 +19,17 @@ class Lilygot547Battery : public PollingComponent {
  public:
   sensor::Sensor *voltage{nullptr};
 
-  int vref = 1100;
   void setup() override;
   void update() override;
-  void update_battery_info();
-  void correct_adc_reference();
 
   void set_voltage_sensor(sensor::Sensor *voltage_sensor) { voltage = voltage_sensor; }
+
+ protected:
+  adc_oneshot_unit_handle_t adc_handle_{nullptr};
+  adc_cali_handle_t cali_handle_{nullptr};
+  bool calibrated_{false};
+  bool init_ok_{false};
 };
+
 }  // namespace lilygo_t5_47_battery
 }  // namespace esphome
