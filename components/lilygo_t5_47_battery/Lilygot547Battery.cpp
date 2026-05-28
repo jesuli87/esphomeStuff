@@ -12,12 +12,19 @@ static const char *TAG = "lilygo_battery";
 // the last known voltage rather than publishing NAN on conflict.
 #define BATT_ADC_CHANNEL ADC2_CHANNEL_3   // GPIO14 on ESP32-S3
 
+// The adc2_* functions and ADC_WIDTH_BIT_12 are legacy ESP-IDF 4.x API.
+// Suppressing deprecated-declarations here because esp_adc/adc_oneshot.h
+// is not reachable from ESPHome external component builds due to a CMake
+// include-path propagation issue. Migration tracked as TODO #4 in README.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
 namespace esphome {
 namespace lilygo_t5_47_battery {
 
 void Lilygot547Battery::setup() {
   // ADC_ATTEN_DB_11 = maximum attenuation, 0–3.1 V input range (legacy enum).
-  esp_err_t ret = adc2_config_channel_atten(BATT_ADC_CHANNEL, ADC_ATTEN_DB_11);
+  esp_err_t ret = adc2_config_channel_atten(BATT_ADC_CHANNEL, ADC_ATTEN_DB_12);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "adc2_config_channel_atten failed: %s", esp_err_to_name(ret));
     return;
@@ -63,3 +70,5 @@ void Lilygot547Battery::update() {
 
 }  // namespace lilygo_t5_47_battery
 }  // namespace esphome
+
+#pragma GCC diagnostic pop

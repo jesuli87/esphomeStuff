@@ -178,3 +178,5 @@ Diagnostic sensors that `on_shutdown` would normally update must be explicitly c
 | 1 | Deep sleep | Sleep durations (`deep_sleep_duration`, `night_time_deep_sleep_duration`) configurable from HA instead of hardcoded YAML substitutions |
 | 2 | Calendar data | Calendar display names configurable from HA (currently hardcoded in `CALENDAR_NAMES` dict in the pyscript) |
 | 3 | Calendar mini-grid | Day dots should show a rolling window of X days forward instead of only the current calendar month |
+| 4 | Battery component | Migrate from legacy `driver/adc.h` (`adc2_get_raw`) to the ESP-IDF 5.x `esp_adc/adc_oneshot.h` oneshot API once the include-path issue with ESPHome's external component CMake setup is resolved. Deprecated-declarations warnings are currently suppressed via `#pragma GCC diagnostic` in `Lilygot547Battery.cpp`. |
+| 5 | RMT driver (t547) | Migrate `rmt_pulse.c` from legacy `driver/rmt.h` to the new `driver/rmt_tx.h` API to clear the deprecation warning |
