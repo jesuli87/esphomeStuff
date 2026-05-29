@@ -74,68 +74,102 @@ Reads battery voltage on the LilyGo T5 4.7" S3 via GPIO14.
 
 ## `pyscript/claudecalendar_data_conversion.py`
 
-Home Assistant [pyscript](https://hacs-pyscript.readthedocs.io/) service that converts raw HA calendar events into the JSON format expected by the CalendarClaude ESPHome firmware.
+Home Assistant [pyscript](https://hacs-pyscript.readthedocs.io/) service that converts raw HA calendar events into the JSON format expected by the CalendarClaude ESPHome firmware, then writes the result to HA state entities that the device reads via the native API.
+
+### Data flow
+
+```
+ESPHome device
+  │  fires esphome.calendar_refresh_request (on boot, on interval, on config change)
+  │  event data: device_name, calendar_entities, calendar_names
+  ▼
+HA automation (mode: single)
+  │  calls calendar.get_events for the entity IDs from the event data
+  │  passes response to pyscript
+  ▼
+pyscript.claudecalendar_data_conversion
+  │  groups events by date, strips descriptions, normalises locations
+  │  clamps past events to today
+  │  computes closest_end_time Unix timestamp for deep-sleep wake optimisation
+  │  writes sensor.{device_name}_calendar_data      (state: "ok", attribute "data": JSON)
+  │  writes sensor.{device_name}_closest_end_time   (state: Unix timestamp as string)
+  ▼
+ESPHome native API (state subscription)
+  │  device receives state change automatically
+  ▼
+on_value handler → re-renders display
+```
+
+**Why `state.set` instead of calling the ESPHome API service directly**: calling `hass.services.call("esphome", ...)` from pyscript blocks the HA event loop and causes system-wide hangs. `state.set()` is non-blocking.
 
 ### What it does
 
-1. Called by an HA automation on a `time_pattern` trigger (every minute)
-2. Receives raw events from `calendar.get_events` for the configured calendars
+1. Called by the HA automation when the device fires `esphome.calendar_refresh_request`
+2. Receives raw events from `calendar.get_events` (called by the automation) and calendar names from the event payload — no HA entity state lookups needed
 3. Groups events by date, strips descriptions, normalises locations, clamps past events to today
-4. Writes the result to `sensor.claudecalendar_data` with `entries` and `closest_end_time` attributes
+4. Computes the `closest_end_time` Unix timestamp for the wake-at-event-end deep sleep optimisation
+5. Writes `sensor.{device_name}_calendar_data` and `sensor.{device_name}_closest_end_time` — ESPHome picks these up automatically via `platform: homeassistant`
 
 ### Configuration
 
-Edit `CALENDAR_NAMES` at the top of the file:
+Calendar selection, display names, and sleep/update intervals are configured directly on the device page in HA. All values are stored in ESP32 NVS flash and survive deep sleep cycles — no reflash needed to change calendars.
 
-```python
-CALENDAR_NAMES = {
-    "calendar.person1": "Person1",
-    "calendar.family":  "Family",
-}
-```
+| Entity | Type | Purpose | Default |
+|---|---|---|---|
+| `text.{name}_calendar_entities` | text (config) | Comma-separated HA calendar entity IDs | — |
+| `text.{name}_calendar_names` | text (config) | Comma-separated display names (positional) | — |
+| `number.{name}_update_interval` | number (config) | Daytime fetch + sleep interval | 15 min |
+| `number.{name}_night_sleep_duration` | number (config) | Night-time sleep duration | 240 min |
 
-Single-word calendar entity IDs (e.g. `calendar.work`) are mapped automatically to their capitalised name without needing an entry here.
+Changing either text entity while the device is awake triggers an immediate re-fetch. Single-word calendars without a matching name entry fall back to the capitalised last segment of the entity ID.
+
+Night-time window start/end hours are still set as YAML substitutions (`night_time_start`, `night_time_end`) since they rarely change.
 
 ### HA automation
 
-```yaml
-- trigger:
-    - platform: time_pattern
-      minutes: "/1"
-  action:
-    - service: calendar.get_events
-      data:
-        duration:
-          days: 180
-      target:
-        entity_id:
-          - calendar.person1
-      response_variable: calendar_response
-    - service: pyscript.claudecalendar_data_conversion
-      data:
-        calendar: "{{ calendar_response }}"
-        now: "{{ now().date() }}"
-  sensor:
-    - name: Claude Calendar Data
-      unique_id: claudecalendar_data
-      state: "{{ now().isoformat() }}"
-      attributes:
-        todays_day_name: >
-          {{ ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][now().weekday()] }}
-        todays_date_month_year: >
-          {% set months = ["January","February","March","April","May","June","July","August","September","October","November","December"] %}
-          {{ months[now().month-1] }} {{ now().strftime('%Y') }}
-        closest_end_time: "{{ state_attr('sensor.claudecalendar_data', 'closest_end_time') }}"
-        entries: "{{ state_attr('sensor.claudecalendar_data', 'entries') }}"
-```
-
-### ESPHome YAML substitutions
+One automation handles **all** CalendarClaude devices. The device fires an event on boot, on its configured update interval, and whenever calendar config changes. `mode: single` prevents concurrent runs from stacking if the device fires faster than the automation completes.
 
 ```yaml
-substitutions:
-  calendar_data_entity_id: sensor.claude_calendar_data
-  calendar_data_update_during_deep_sleep_entity_id: binary_sensor.claude_calendar_data_update_during_deep_sleep
+alias: ESPHome Calendar Refresh
+description: >-
+  ESPHome Calendar automation — fetches calendar data from HA and passes it to
+  pyscript for processing. Triggered by each device on boot, on its configured
+  update interval, and when calendar config changes. mode: queued ensures
+  multiple devices are handled sequentially without dropping events.
+triggers:
+  - event_type: esphome.calendar_refresh_request
+    trigger: event
+actions:
+  - variables:
+      device_name: "{{ trigger.event.data.device_name }}"
+      calendar_entities_str: "{{ trigger.event.data.calendar_entities }}"
+      calendar_names_str: "{{ trigger.event.data.calendar_names }}"
+  - target:
+      entity_id: >
+        {{ calendar_entities_str.split(',') | map('trim') | select | join(', ') }}
+    data:
+      duration:
+        days: 180
+    response_variable: calendar_response
+    action: calendar.get_events
+  - data:
+      device_name: "{{ device_name }}"
+      calendar: "{{ calendar_response }}"
+      calendar_names: "{{ calendar_names_str }}"
+    action: pyscript.claudecalendar_data_conversion
+mode: queued
+max_exceeded: silent
 ```
+
+**Why calendar config comes from the event payload (not `states(...)`)**: on boot the device connects to HA and fires the event before HA has had time to sync the text entity states back. Reading from the event payload (which the device populates from its own NVS) avoids this race condition.
+
+### Setup
+
+1. Flash the device
+2. Drop `claudecalendar_data_conversion.py` into your pyscript directory and reload pyscript
+3. Add the automation above to HA (one copy works for all devices)
+4. Set **Calendar Entities** and **Calendar Names** on the device page in HA
+5. Press **Refresh Screen** to fetch data immediately without rebooting
 
 ---
 
@@ -167,7 +201,11 @@ esp_sleep_enable_timer_wakeup((uint64_t)sleep_duration_us);
 esp_deep_sleep_start();
 ```
 
-Diagnostic sensors that `on_shutdown` would normally update must be explicitly called with `component.update` earlier in the same script before the sleep lambda. `esp_deep_sleep_start()` handles WiFi power-down internally so no explicit WiFi stop is needed.
+Diagnostic sensors that `on_shutdown` would normally update must be explicitly called with `component.update` earlier in the same script, followed by a ~1 s delay to allow the native API to flush state to HA before the connection drops. `esp_deep_sleep_start()` handles WiFi power-down internally so no explicit WiFi stop is needed.
+
+### Battery level across sleep cycles
+
+Battery level is stored in a `restore_value: yes` global (`battery_level_stored`) and published to HA immediately at boot start, before the ADC measurement runs (~60 s into the boot cycle). This ensures HA sees the last known battery level as soon as the device reconnects rather than showing "unavailable" for the first minute.
 
 ---
 
@@ -175,8 +213,6 @@ Diagnostic sensors that `on_shutdown` would normally update must be explicitly c
 
 | # | Area | Description |
 |---|---|---|
-| 1 | Deep sleep | Sleep durations (`deep_sleep_duration`, `night_time_deep_sleep_duration`) configurable from HA instead of hardcoded YAML substitutions |
-| 2 | Calendar data | Calendar display names configurable from HA (currently hardcoded in `CALENDAR_NAMES` dict in the pyscript) |
 | 3 | Calendar mini-grid | Day dots should show a rolling window of X days forward instead of only the current calendar month |
 | 4 | Battery component | Migrate from legacy `driver/adc.h` (`adc2_get_raw`) to the ESP-IDF 5.x `esp_adc/adc_oneshot.h` oneshot API once the include-path issue with ESPHome's external component CMake setup is resolved. Deprecated-declarations warnings are currently suppressed via `#pragma GCC diagnostic` in `Lilygot547Battery.cpp`. |
 | 5 | RMT driver (t547) | Migrate `rmt_pulse.c` from legacy `driver/rmt.h` to the new `driver/rmt_tx.h` API to clear the deprecation warning |
