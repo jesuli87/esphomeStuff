@@ -1,24 +1,20 @@
 #pragma once
-#include <Arduino.h>
 #include "esphome/core/component.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/core/hal.h"
 
-//#include <driver/adc.h>
-//Removed above to resolve Wire Compile errors
-//Added below for same reason
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_continuous.h"
-#include "esp_adc/adc_cali_scheme.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc_cal.h"
-//End of additions
+// Use the legacy driver ADC API — available via the 'driver' IDF component which
+// is always a dependency in ESPHome builds. Avoids needing an explicit esp_adc
+// component declaration that the external-component CMake setup doesn't propagate.
+#include "driver/adc.h"
 
-#ifndef EPD_DRIVER
-#define EPD_DRIVER
-#include "epd_driver.h"
-#include "epd_highlevel.h"
-#endif
+// Forward-declare the EPD power functions from the t547 component.
+// epd_driver.h is not on the include path for this component, but the symbols
+// are available at link time because t547 is compiled into the same firmware.
+extern "C" {
+  void epd_poweron();
+  void epd_poweroff();
+}
 
 namespace esphome {
 namespace lilygo_t5_47_battery {
@@ -27,13 +23,16 @@ class Lilygot547Battery : public PollingComponent {
  public:
   sensor::Sensor *voltage{nullptr};
 
-  int vref = 1100;
   void setup() override;
   void update() override;
-  void update_battery_info();
-  void correct_adc_reference();
 
   void set_voltage_sensor(sensor::Sensor *voltage_sensor) { voltage = voltage_sensor; }
+
+ protected:
+  bool init_ok_{false};
+  // Last successfully read raw value — retained across WiFi-conflict skips.
+  int last_raw_{-1};
 };
+
 }  // namespace lilygo_t5_47_battery
 }  // namespace esphome
