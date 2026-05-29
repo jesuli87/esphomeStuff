@@ -1,0 +1,1019 @@
+# ==============================================================================
+# SETUP — configure these values when flashing a new device
+# ==============================================================================
+
+substitutions:
+  # Device name: must be lowercase, no spaces. Used as the ESPHome entity prefix in HA.
+  esphome_name: "calendarclaude"
+  # Friendly name shown in HA.
+  esp_name: "E-paper calendar"
+  # HA state entities written by pyscript. Must match the device name above.
+  # platform: homeassistant entity_id does not resolve ${} substitutions, so these
+  # are defined explicitly here and referenced with $ below.
+  calendar_data_entity: "sensor.calendarclaude_calendar_data"
+  closest_end_time_entity: "sensor.calendarclaude_closest_end_time"
+
+  # Night window — hours outside this range use the night sleep duration.
+  # Configuring as substitutions since they rarely need changing.
+  night_time_start: "22"
+  night_time_end: "6"
+
+  # Battery voltage limits for the installed battery (used to calculate % level).
+  battery_full_voltage: "4.2"
+  battery_empty_voltage: "3.2"
+
+  # Font files — adjust paths if using different fonts.
+  # Changing fonts will likely require spacing and position adjustments in the display lambda.
+  font_medium: 'fonts/Roboto-Regular.ttf'
+  font_bold: 'fonts/Roboto-Bold.ttf'
+  font_mdi: 'fonts/materialdesignicons-webfont.ttf'
+
+esphome:
+  name: $esphome_name
+  friendly_name: $esp_name
+  includes:
+    - components/calendar/calendar_utilities.h
+    - components/calendar/text_utilities_claude.h
+    - components/calendar/time_utilities_claude.h
+    - components/calendar/misc_utilities.h
+  on_boot:
+    - priority: -100.0
+      then:
+        - script.execute: boot_script
+  platformio_options:
+    board_build.f_flash: 80000000L
+    board_build.flash_mode: qio
+  on_shutdown:
+    # Safety net for non-sleep shutdowns (OTA, crash). The enter_deep_sleep script
+    # does its own explicit sensor updates + 1 s flush before calling esp_deep_sleep_start(),
+    # so these only run on true shutdowns, not on every sleep cycle.
+    - priority: -100.0
+      then:
+        - component.update: display_refreshes_sensor
+        - component.update: wifi_signal_sensor
+        - component.update: last_wake_up_cause
+        - component.update: battery_level
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  ap:
+    ssid: "CalendarClaude Fallback"
+    password: !secret ap_fallback_password
+
+api:
+
+ota:
+  - platform: esphome
+
+logger:
+  level: INFO
+
+
+# ==============================================================================
+# HARDWARE — board, framework, and peripheral configuration
+# No changes needed here for a standard LilyGo T5 4.7" S3 build.
+# ==============================================================================
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_SPIRAM: "y"
+      CONFIG_SPIRAM_MODE_OCT: "y"
+      CONFIG_SPIRAM_SPEED_80M: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      # Suppress deprecation warning from rmt_pulse.c which still uses the legacy RMT API.
+      CONFIG_RMT_ENABLE_LEGACY_DRIVER: "y"
+
+external_components:
+  - source: github://jesuli87/esphomeStuff@claude
+    components: [t547]
+    refresh: always
+  - source: github://jesuli87/esphomeStuff@claude
+    components: [lilygo_t5_47_battery]
+    refresh: always
+
+i2c:
+  - id: bus_a
+    sda: GPIO18
+    scl: GPIO17
+    frequency: 100khz
+    scan: false
+    setup_priority: -100
+
+captive_portal:
+
+deep_sleep:
+  id: deep_sleep_1
+
+http_request:
+  id: http_request_data
+  useragent: esphome/device
+  timeout: 2s
+  verify_ssl: false
+
+
+# ==============================================================================
+# HA DEVICE PAGE — all settings configurable from HA without reflashing.
+# Values are stored in ESP32 NVS flash and survive deep sleep cycles.
+# ==============================================================================
+
+# Calendar source configuration.
+# Changing either value while the device is awake triggers an immediate re-fetch.
+text:
+  - platform: template
+    name: "Calendar Entities"
+    id: calendar_entities_config
+    entity_category: config
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: ""
+    max_length: 200
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(boot_script_finished_running);'
+            then:
+              - homeassistant.event:
+                  event: esphome.calendar_refresh_request
+                  data:
+                    device_name: !lambda 'return App.get_name();'
+                    calendar_entities: !lambda 'return x;'
+                    calendar_names: !lambda 'return id(calendar_names_config).state;'
+  - platform: template
+    name: "Calendar Names"
+    id: calendar_names_config
+    entity_category: config
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: ""
+    max_length: 200
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(boot_script_finished_running);'
+            then:
+              - homeassistant.event:
+                  event: esphome.calendar_refresh_request
+                  data:
+                    device_name: !lambda 'return App.get_name();'
+                    calendar_entities: !lambda 'return id(calendar_entities_config).state;'
+                    calendar_names: !lambda 'return x;'
+
+# Sleep and fetch interval settings.
+# Daytime deep sleep duration equals the update interval so each wakeup fetches fresh data.
+# Night sleep duration applies between night_time_start and night_time_end (substitutions above).
+number:
+  - platform: template
+    name: "Update Interval"
+    id: update_interval_minutes
+    entity_category: config
+    unit_of_measurement: "min"
+    min_value: 1
+    max_value: 120
+    step: 1
+    initial_value: 15
+    optimistic: true
+    restore_value: true
+    mode: box
+  - platform: template
+    name: "Night Sleep Duration"
+    id: night_sleep_duration_minutes
+    entity_category: config
+    unit_of_measurement: "min"
+    min_value: 10
+    max_value: 480
+    step: 10
+    initial_value: 240
+    optimistic: true
+    restore_value: true
+    mode: box
+
+# Appearance and footer style.
+# on_value is guarded by boot_script_finished_running to suppress the initial
+# state restore from HA on every wakeup triggering an unnecessary screen refresh.
+select:
+  - platform: template
+    name: Appearance
+    id: appearance
+    options:
+      - "Light Mode"
+      - "Dark Mode"
+    initial_option: "Light Mode"
+    restore_value: true
+    optimistic: true
+    entity_category: config
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(boot_script_finished_running);'
+            then:
+              - script.execute: update_screen
+  - platform: template
+    name: Footer
+    id: footer
+    options:
+      - "Next Event"
+      - "Random Quote"
+    initial_option: "Next Event"
+    restore_value: true
+    optimistic: true
+    entity_category: config
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(boot_script_finished_running);'
+            then:
+              - script.execute: update_screen
+
+# Buttons visible on the HA device page.
+# Shutdown is internal (used by battery-empty logic) and not exposed to HA.
+button:
+  - platform: shutdown
+    name: Shutdown
+    id: shutdown_button
+    internal: true
+  - platform: restart
+    name: Restart
+  - platform: template
+    name: "Refresh Screen"
+    icon: "mdi:calendar-refresh"
+    entity_category: config
+    on_press:
+      - lambda: |-
+          id(last_calendar_fetch_ts) = (long long)id(homeassistant_time).now().timestamp;
+          ESP_LOGI("calendar", "Refresh Screen pressed — firing event and rendering immediately");
+      - homeassistant.event:
+          event: esphome.calendar_refresh_request
+          data:
+            device_name: !lambda 'return App.get_name();'
+            calendar_entities: !lambda 'return id(calendar_entities_config).state;'
+            calendar_names: !lambda 'return id(calendar_names_config).state;'
+      # Render immediately with whatever data is currently available.
+      # If the automation returns changed data, on_value on calendar_json will
+      # trigger a second render automatically.
+      - script.execute: update_screen
+
+
+# ==============================================================================
+# GLOBALS — runtime state, reset on each boot unless restore_value: yes
+# ==============================================================================
+
+globals:
+  # Set to true when the first calendar data arrives after boot.
+  - id: data_received
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # True after boot_script completes. Guards on_value handlers from firing during boot.
+  - id: boot_script_finished_running
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # Unix timestamp of the last calendar refresh event fired. Used by on_time to
+  # enforce the update interval without relying on a fixed time trigger period.
+  - id: last_calendar_fetch_ts
+    type: long long
+    restore_value: no
+    initial_value: '0'
+  # Sleep duration computed by enter_deep_sleep, stored so the lambda can pass
+  # it to esp_sleep_enable_timer_wakeup() after the delay step.
+  - id: sleep_duration_us
+    type: long long
+    restore_value: no
+    initial_value: '0'
+  # Persisted across sleep cycles — published to HA immediately on boot so the
+  # battery sensor shows a value before the ADC measurement completes (~60 s in).
+  - id: battery_level_stored
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+  # Persisted display refresh counter.
+  - id: display_refreshes
+    type: int
+    restore_value: yes
+    initial_value: '0'
+  # Persisted timestamp of the last display update (used by the Last Display Update sensor).
+  - id: last_display_update_stored
+    type: long int
+    restore_value: yes
+    initial_value: '0'
+
+
+# ==============================================================================
+# SENSORS & DATA
+# ==============================================================================
+
+binary_sensor:
+  # Read from an HA input_boolean to disable deep sleep for OTA updates.
+  - platform: homeassistant
+    id: disable_deep_sleep
+    entity_id: input_boolean.prevent_deep_sleep
+    on_state:
+      if:
+        condition:
+          and:
+            - lambda: 'return id(boot_script_finished_running);'
+            - binary_sensor.is_off: disable_deep_sleep
+        then:
+          - script.execute: enter_deep_sleep
+
+sensor:
+  # Timestamp of the last full display render.
+  - platform: template
+    name: "Last Display Update"
+    device_class: timestamp
+    entity_category: diagnostic
+    id: last_display_update
+    lambda: "return id(last_display_update_stored);"
+    on_value:
+      then:
+        - lambda: "id(last_display_update_stored) = x;"
+
+  # Timestamp of the last boot/wakeup.
+  - platform: template
+    name: "Last Wake Up"
+    device_class: timestamp
+    entity_category: diagnostic
+    id: last_wake_up
+
+  # Cumulative display refresh count.
+  - platform: template
+    name: "Display Refreshes"
+    id: display_refreshes_sensor
+    accuracy_decimals: 0
+    unit_of_measurement: "Refreshes"
+    state_class: total_increasing
+    entity_category: diagnostic
+    lambda: 'return id(display_refreshes);'
+
+  # WiFi RSSI — updated before each sleep so HA has a fresh value.
+  - platform: wifi_signal
+    name: "WiFi Signal Sensor"
+    id: wifi_signal_sensor
+    entity_category: diagnostic
+
+  # ESP32 wakeup cause code (0 = power-on, 4 = timer).
+  - platform: template
+    name: "Last Wake Up Cause"
+    id: last_wake_up_cause
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    lambda: 'return esp_sleep_get_wakeup_cause();'
+
+  # Unix timestamp of the soonest event end time today.
+  # Written by pyscript to sensor.{device_name}_closest_end_time in HA.
+  # Used by enter_deep_sleep to wake early when an event is about to end.
+  - platform: homeassistant
+    id: closest_end_time
+    entity_id: $closest_end_time_entity
+    internal: true
+
+  # Battery percentage shown on screen and in HA.
+  # The raw voltage from lilygo_t5_47_battery is converted here using the
+  # configured full/empty voltages. Also stored in battery_level_stored global
+  # so the last known value can be published immediately on the next boot.
+  - platform: template
+    name: "Battery Level"
+    id: battery_level
+    entity_category: diagnostic
+    device_class: battery
+    unit_of_measurement: '%'
+    update_interval: never
+
+  - platform: lilygo_t5_47_battery
+    update_interval: 60s
+    voltage:
+      name: "Battery Voltage"
+      id: battery_voltage_raw
+      entity_category: diagnostic
+      on_value:
+        then:
+          - sensor.template.publish:
+              id: battery_level
+              state: !lambda |-
+                float full  = $battery_full_voltage;
+                float empty = $battery_empty_voltage;
+                float pct   = (x - empty) / (full - empty) * 100.0f;
+                if (pct > 100.0f) pct = 100.0f;
+                if (pct < 0.0f)   pct = 0.0f;
+                id(battery_level_stored) = pct;
+                return pct;
+
+text_sensor:
+  # Calendar JSON — written by pyscript to the "data" attribute of
+  # sensor.{device_name}_calendar_data in HA. ESPHome receives it automatically
+  # via the native API state subscription; no direct push to ESPHome is needed.
+  # HA state is limited to 255 chars, so the JSON lives in the attribute.
+  - platform: homeassistant
+    id: calendar_json
+    entity_id: $calendar_data_entity
+    attribute: data
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            if (x.empty() || x == "[]") return;
+            ESP_LOGI("calendar", "calendar_json updated: %d bytes, boot_done=%s",
+                     (int)x.size(), id(boot_script_finished_running) ? "YES" : "NO");
+            id(data_received) = true;
+        - if:
+            condition:
+              lambda: 'return id(boot_script_finished_running);'
+            then:
+              - script.execute: update_screen
+
+  # Today's day name and month/year — computed on-device from HA time.
+  # No HA sensor entity required.
+  - platform: template
+    id: todays_day_name
+    update_interval: 60s
+    lambda: |-
+      const char* names[] = {
+        "Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"
+      };
+      auto t = id(homeassistant_time).now();
+      if (!t.is_valid()) return std::string("...");
+      // ESPTime::day_of_week is 1-indexed: 1=Sunday … 7=Saturday
+      return std::string(names[t.day_of_week - 1]);
+
+  - platform: template
+    id: todays_date_month_year
+    update_interval: 60s
+    lambda: |-
+      const char* months[] = {
+        "January","February","March","April","May","June",
+        "July","August","September","October","November","December"
+      };
+      auto t = id(homeassistant_time).now();
+      if (!t.is_valid()) return std::string("...");
+      char buf[30];
+      snprintf(buf, sizeof(buf), "%s %d", months[t.month - 1], t.year);
+      return std::string(buf);
+
+  # Current time string shown in the display footer.
+  - platform: template
+    name: "Device Current Time"
+    id: device_current_time
+    update_interval: 60s
+    lambda: |-
+      char str[17];
+      time_t currTime = id(homeassistant_time).now().timestamp;
+      strftime(str, sizeof(str), "%Y-%m-%d %H:%M", localtime(&currTime));
+      return std::string(str);
+
+
+# ==============================================================================
+# SCRIPTS — boot sequence, sleep logic, and screen refresh
+# ==============================================================================
+
+script:
+  # Render the display and record the refresh.
+  # If the battery is empty, the display lambda shows the battery icon.
+  # After rendering, shut down if battery is empty.
+  - id: update_screen
+    then:
+      - logger.log: 'update_screen: starting'
+      - component.update: t5_display
+      - lambda: 'id(display_refreshes) += 1;'
+      - logger.log: 'update_screen: done'
+      - sensor.template.publish:
+          id: last_display_update
+          state: !lambda 'return id(homeassistant_time).now().timestamp;'
+      - if:
+          condition:
+            sensor.in_range:
+              id: battery_level
+              below: 0.0
+          then:
+            - logger.log: 'update_screen: battery empty — shutting down'
+            - button.press: shutdown_button
+
+  # Wait briefly, then enter deep sleep unless it is disabled in HA.
+  - id: check_deep_sleep
+    then:
+      - delay: 500ms
+      - if:
+          condition:
+            binary_sensor.is_off: disable_deep_sleep
+          then:
+            - logger.log: 'check_deep_sleep: entering deep sleep'
+            - script.execute: enter_deep_sleep
+          else:
+            - logger.log: 'check_deep_sleep: deep sleep disabled — staying awake for OTA'
+
+  # Calculate the next sleep duration and enter deep sleep.
+  #
+  # Sleep duration is the minimum of:
+  #   1. The configured update interval (daytime) or night sleep duration (night-time).
+  #   2. Seconds until midnight + 2 s (so the date always changes on the display).
+  #   3. Seconds until the soonest event ends today + 61 s (wake to refresh next-event footer).
+  #
+  # IMPORTANT: esp_deep_sleep_start() is called directly (not via deep_sleep.enter) to
+  # prevent ESPHome's shutdown sequence from re-enabling EXT1 wakeup on GPIO21.
+  # GPIO21 is pulled HIGH by hardware on the LilyGo T5 4.7" S3 and would cause
+  # immediate re-wakeup on every sleep cycle if EXT1 is active.
+  - id: enter_deep_sleep
+    then:
+      - lambda: |-
+          auto time = id(homeassistant_time).now();
+
+          int night_start = $night_time_start;
+          int night_end   = $night_time_end;
+
+          long sleep_sec = (time.hour >= night_start || time.hour < night_end)
+            ? (long)(id(night_sleep_duration_minutes).state * 60.0f)
+            : (long)(id(update_interval_minutes).state * 60.0f);
+
+          if (time.hour >= night_start || time.hour < night_end) {
+            long night_remaining = seconds_until_night_end(time, night_end);
+            if (sleep_sec > night_remaining) sleep_sec = night_remaining;
+            ESP_LOGD("sleep", "Night-time sleep: %ld s (night ends in %ld s)", sleep_sec, night_remaining);
+          } else {
+            ESP_LOGD("sleep", "Daytime sleep: %ld s", sleep_sec);
+          }
+
+          long until_midnight = seconds_until_midnight(time);
+          if (until_midnight > 0) until_midnight += 2;
+
+          long until_event_end = seconds_until_closest_event_end(time, id(closest_end_time).state);
+          if (until_event_end > 0) until_event_end += 61;
+
+          long candidates[3] = {sleep_sec, until_midnight, until_event_end};
+          long chosen = find_non_zero_min_in_array(candidates, 3);
+          ESP_LOGI("sleep", "Sleeping for %ld s (midnight=%ld, event_end=%ld)", chosen, until_midnight, until_event_end);
+
+          id(sleep_duration_us) = (long long)chosen * 1000000LL;
+      # Flush sensor state to HA before disconnecting.
+      - component.update: display_refreshes_sensor
+      - component.update: wifi_signal_sensor
+      - component.update: last_wake_up_cause
+      - component.update: battery_level
+      # Wait 1 s for the native API to transmit the above state updates to HA.
+      - delay: 1s
+      - lambda: |-
+          esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1);
+          esp_sleep_enable_timer_wakeup((uint64_t)id(sleep_duration_us));
+          esp_deep_sleep_start();
+
+  # Boot sequence — runs once per wakeup at priority -100 (after all components init).
+  - id: boot_script
+    then:
+      - logger.log: 'boot_script: started'
+      # Publish the last known battery level immediately so HA shows a value
+      # as soon as the API connects, before the ADC measurement runs (~60 s in).
+      - sensor.template.publish:
+          id: battery_level
+          state: !lambda 'return id(battery_level_stored);'
+      - wait_until:
+          condition: time.has_time
+      - logger.log: 'boot_script: time synced'
+      - sensor.template.publish:
+          id: last_wake_up
+          state: !lambda 'return id(homeassistant_time).now().timestamp;'
+      # Fire the calendar refresh event. The HA automation (mode: queued) picks this
+      # up, calls calendar.get_events, and hands the result to pyscript which writes
+      # the JSON to a HA state entity that the device reads via platform: homeassistant.
+      # Calendar config is passed in the event payload (not read from HA entity state)
+      # to avoid a race condition where HA hasn't synced the entity states back yet.
+      - lambda: |-
+          id(last_calendar_fetch_ts) = (long long)id(homeassistant_time).now().timestamp;
+          ESP_LOGI("calendar", "boot_script: firing refresh event (device=%s, interval=%.0f min)",
+                   App.get_name().c_str(), id(update_interval_minutes).state);
+      - homeassistant.event:
+          event: esphome.calendar_refresh_request
+          data:
+            device_name: !lambda 'return App.get_name();'
+            calendar_entities: !lambda 'return id(calendar_entities_config).state;'
+            calendar_names: !lambda 'return id(calendar_names_config).state;'
+      - logger.log: 'boot_script: waiting for calendar data (60 s timeout)...'
+      - wait_until:
+          condition:
+            lambda: 'return id(data_received);'
+          timeout: 60s
+      - logger.log: 'boot_script: data wait complete'
+      - logger.log: 'boot_script: rendering screen'
+      - script.execute: update_screen
+      - script.execute: check_deep_sleep
+      - lambda: 'id(boot_script_finished_running) = true;'
+      # Fire a second refresh event now that boot is complete. If calendar config was
+      # changed in HA while the device was sleeping, on_value fired during boot but
+      # was suppressed (boot_script_finished_running was false at that point).
+      # This second event picks up any such missed config changes.
+      - homeassistant.event:
+          event: esphome.calendar_refresh_request
+          data:
+            device_name: !lambda 'return App.get_name();'
+            calendar_entities: !lambda 'return id(calendar_entities_config).state;'
+            calendar_names: !lambda 'return id(calendar_names_config).state;'
+      - logger.log: 'boot_script: finished'
+
+# HA time component — provides on_time triggers for the periodic interval fetch.
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+    on_time:
+      # Dummy every-second trigger required for on_time to function in ESPHome.
+      - seconds: '*'
+        then: []
+      # Every minute: check whether the update interval has elapsed and fire a refresh if so.
+      - seconds: 0
+        minutes: /1
+        then:
+          - if:
+              condition:
+                lambda: |-
+                  if (!id(boot_script_finished_running)) return false;
+                  long long now_ts    = (long long)id(homeassistant_time).now().timestamp;
+                  long long interval  = (long long)(id(update_interval_minutes).state * 60.0f);
+                  return (now_ts - id(last_calendar_fetch_ts)) >= interval;
+              then:
+                - lambda: |-
+                    id(last_calendar_fetch_ts) = (long long)id(homeassistant_time).now().timestamp;
+                    ESP_LOGI("calendar", "on_time: interval elapsed — firing refresh event");
+                - homeassistant.event:
+                    event: esphome.calendar_refresh_request
+                    data:
+                      device_name: !lambda 'return App.get_name();'
+                      calendar_entities: !lambda 'return id(calendar_entities_config).state;'
+                      calendar_names: !lambda 'return id(calendar_names_config).state;'
+                # Screen update is handled by calendar_json on_value when data arrives.
+    on_time_sync:
+      then:
+        - logger.log: "Time synchronised with Home Assistant"
+
+
+# ==============================================================================
+# FONTS & DISPLAY RENDERING
+# ==============================================================================
+
+font:
+  - file: $font_medium
+    id: font_medium_18
+    size: 18
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÅ[\\]^_`abcdefghijklmnopqrstuvwxyzäöå{|}~·"
+  - file: $font_medium
+    id: font_medium_20
+    size: 20
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÅ[\\]^_`abcdefghijklmnopqrstuvwxyzäöå{|}~·"
+  - file: $font_medium
+    id: font_medium_22
+    size: 22
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÅ[\\]^_`abcdefghijklmnopqrstuvwxyzäöå{|}~·"
+  - file: $font_bold
+    id: font_bold_22
+    size: 22
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÅ[\\]^_`abcdefghijklmnopqrstuvwxyzäöå{|}~·"
+  - file: $font_bold
+    id: font_bold_25
+    size: 25
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÅ[\\]^_`abcdefghijklmnopqrstuvwxyzäöå{|}~·"
+  - file: $font_medium
+    id: font_medium_35
+    size: 35
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÅ[\\]^_`abcdefghijklmnopqrstuvwxyzäöå{|}~·"
+  - file: $font_bold
+    id: font_bold_32
+    size: 32
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÅ[\\]^_`abcdefghijklmnopqrstuvwxyzäöå{|}~·"
+  - file: $font_medium
+    id: font_medium_45
+    size: 45
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÅ[\\]^_`abcdefghijklmnopqrstuvwxyzäöå{|}~·"
+  - file: $font_bold
+    id: font_bold_100
+    size: 100
+    glyphs: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+  - file: $font_mdi
+    id: font_mdi_large
+    size: 300
+    glyphs:
+      - "\U000f10cd"  # battery-alert-variant-outline
+      - "\U000F0E8E"  # calendar-sync
+
+display:
+  - platform: t547
+    id: t5_display
+    rotation: 90
+    auto_clear_enabled: true
+    update_interval: never
+    lambda: |-
+      std::map<std::string, std::string> icon_map {
+        {"battery-alert-variant-outline", "\U000f10cd"},
+        {"calendar-sync",                 "\U000F0E8E"},
+      };
+
+      int screenWidth  = 540;
+      int screenHeight = 960;
+
+      // Appearance: Light Mode = black on white, Dark Mode = white on black.
+      auto color_content    = Color::WHITE;
+      auto color_background = Color::BLACK;
+      auto index = id(appearance).active_index();
+      if (index.has_value() && index.value() == 0) {
+        ESP_LOGD("custom", "Light Mode");
+        color_content    = Color::BLACK;
+        color_background = Color::WHITE;
+      } else {
+        ESP_LOGD("custom", "Dark Mode");
+      }
+
+      it.fill(color_background);
+
+      // ── Battery empty screen ──────────────────────────────────────────────
+      if (id(battery_level).state == 0.0) {
+        it.printf(screenWidth/2, screenHeight/2, id(font_mdi_large), color_content, TextAlign::CENTER,
+                  "%s", icon_map["battery-alert-variant-outline"].c_str());
+        return;
+      }
+
+      // ── Waiting for data screen ───────────────────────────────────────────
+      if (!id(data_received)) {
+        it.printf(screenWidth/2, screenHeight/2 - 40, id(font_mdi_large), color_content, TextAlign::CENTER,
+                  "%s", icon_map["calendar-sync"].c_str());
+        it.printf(screenWidth/2, screenHeight/2 + screenHeight/4 - 40, id(font_medium_20), color_content,
+                  TextAlign::BOTTOM_CENTER, "Waiting for data...");
+        // Show the configured calendar sources so misconfiguration is visible on screen.
+        std::string cal_ents  = id(calendar_entities_config).state;
+        std::string cal_names = id(calendar_names_config).state;
+        if (cal_ents.empty())  cal_ents  = "(none configured)";
+        if (cal_names.empty()) cal_names = "(none configured)";
+        it.printf(screenWidth/2, screenHeight/2 + screenHeight/4 - 10, id(font_medium_18), color_content,
+                  TextAlign::BOTTOM_CENTER, "Calendars: %s", cal_ents.c_str());
+        it.printf(screenWidth/2, screenHeight/2 + screenHeight/4 + 16, id(font_medium_18), color_content,
+                  TextAlign::BOTTOM_CENTER, "Names: %s", cal_names.c_str());
+        return;
+      }
+
+      // ── Main calendar screen ──────────────────────────────────────────────
+
+      auto time = id(homeassistant_time).now();
+
+      // ── Battery % — top-left corner ───────────────────────────────────────
+      // battery_level is published from battery_level_stored at boot so the
+      // last known value is always available immediately after wakeup.
+      {
+        float bat_f  = id(battery_level).state;
+        int bat_pct  = (std::isnan(bat_f) || bat_f < 0.0f) ? 0 : (int)bat_f;
+        if (bat_pct > 100) bat_pct = 100;
+        it.printf(20, 14, id(font_medium_18), color_content, TextAlign::TOP_LEFT, "%d%%", bat_pct);
+      }
+
+      // ── Date header — day number, day name, month/year ────────────────────
+      // font_bold_100 (down from 170) makes room for the battery indicator above
+      // while still rendering the day number prominently. All three text elements
+      // are centred on the same x axis; the axis shifts only if the widest element
+      // would otherwise encroach on the mini-calendar grid.
+      int day_of_month_width    = get_text_width(&it, id(font_bold_100),  "%d", time.day_of_month);
+      int todays_day_name_width = get_text_width(&it, id(font_medium_35), "%s", id(todays_day_name).state.c_str());
+      int day_title_width       = get_text_width(&it, id(font_medium_22), "%s", id(todays_date_month_year).state.c_str());
+
+      int widths[3] = {day_of_month_width, todays_day_name_width, day_title_width};
+      int max_date_width = find_max_in_array(widths, 3);
+
+      int date_x_offset  = 20;
+      int calendar_x_pos = 255;
+      int cell_w         = 41;
+      if (max_date_width > 180) {
+        date_x_offset  = 10;
+        calendar_x_pos = 270;
+        cell_w         = 39;
+      }
+
+      int date_center_x = max_date_width / 2 + date_x_offset;
+      // Day number starts at y=28 — leaves 23 px above for the battery indicator.
+      // font_bold_100 digits render ~95 px tall (≈0.95× point size), so day name
+      // starts at y=128 (5 px gap) and month at y=165, all clear of the y=240 divider.
+      it.printf(date_center_x, 28,  id(font_bold_100),  color_content, TextAlign::TOP_CENTER, "%d", time.day_of_month);
+      it.printf(date_center_x, 128, id(font_medium_35), color_content, TextAlign::TOP_CENTER, "%s", id(todays_day_name).state.c_str());
+      it.printf(date_center_x, 165, id(font_medium_22), color_content, TextAlign::TOP_CENTER, "%s", id(todays_date_month_year).state.c_str());
+
+      // ── Mini calendar grid — rolling 5-week window ────────────────────────
+      // Starts from Monday of the current week so today is always in row 1.
+      // The grid continues into the next month naturally — end-of-month dates
+      // are always visible without having to flip to the next month view.
+      // Day 1 of a new month is shown in bold to mark the month boundary.
+      int calendar_y_pos  = 35;
+      int cell_h          = 28;
+      int circle_size     = 15;
+      int days_padding    = 10;
+      int days_line_left  = 0;
+      int days_line_right = 0;
+
+      const char* dow_names[] = {"Mo","Tu","We","Th","Fr","Sa","Su"};
+
+      // Find Monday of the current week via standard C time arithmetic.
+      // Using midday (hour=12) avoids date-slip on DST-boundary days when
+      // adding multiples of 86400 s to reach other cells in the grid.
+      struct tm base_tm = {};
+      base_tm.tm_year = time.year - 1900;
+      base_tm.tm_mon  = time.month - 1;
+      base_tm.tm_mday = time.day_of_month;
+      base_tm.tm_hour = 12;
+      base_tm.tm_min  = 0;
+      base_tm.tm_sec  = 0;
+      time_t base_t = mktime(&base_tm);
+      // tm_wday after mktime: 0=Sun, 1=Mon … 6=Sat → convert to Mon=0 offset
+      int days_since_monday = (base_tm.tm_wday == 0) ? 6 : base_tm.tm_wday - 1;
+      time_t monday_t = base_t - (time_t)days_since_monday * 86400;
+
+      // Header row — abbreviated day names
+      for (int j = 0; j < 7; j++) {
+        int x = calendar_x_pos + cell_w * j;
+        int y = calendar_y_pos;
+        it.printf(x, y, id(font_bold_25), color_content, TextAlign::CENTER, "%s", dow_names[j]);
+        if (j == 0) days_line_left  = x - get_text_width(&it, id(font_bold_22), "%s", dow_names[j]) / 2;
+        if (j == 6) days_line_right = x + get_text_width(&it, id(font_bold_22), "%s", dow_names[j]) / 2;
+      }
+      it.line(days_line_left, calendar_y_pos + cell_h / 2,
+              days_line_right, calendar_y_pos + cell_h / 2, color_content);
+
+      // Date rows — 5 weeks (rows fit within the y=240 divider)
+      for (int row = 0; row < 5; row++) {
+        for (int col = 0; col < 7; col++) {
+          time_t cell_t = monday_t + (time_t)(row * 7 + col) * 86400;
+          struct tm cell_buf;
+          localtime_r(&cell_t, &cell_buf);
+          int cell_day  = cell_buf.tm_mday;
+          int cell_mon  = cell_buf.tm_mon + 1;
+          int cell_year = cell_buf.tm_year + 1900;
+
+          bool is_today = (cell_year == time.year &&
+                           cell_mon  == time.month &&
+                           cell_day  == time.day_of_month);
+
+          int x = calendar_x_pos + cell_w * col;
+          int y = calendar_y_pos + cell_h * (row + 1) + days_padding;
+
+          if (is_today) {
+            it.filled_circle(x, y - 1, circle_size, color_content);
+            it.printf(x, y, id(font_bold_22), color_background, TextAlign::CENTER, "%d", cell_day);
+          } else if (cell_day == 1) {
+            // Bold "1" marks the start of a new month in the rolling window.
+            it.printf(x, y, id(font_bold_22), color_content, TextAlign::CENTER, "%d", cell_day);
+          } else {
+            it.printf(x, y, id(font_medium_22), color_content, TextAlign::CENTER, "%d", cell_day);
+          }
+        }
+      }
+
+      // Divider between mini grid and event list.
+      it.filled_rectangle(0, 240, screenWidth, 3, color_content);
+
+      // ── Event list ────────────────────────────────────────────────────────
+      JsonDocument doc;
+      deserializeJson(doc, id(calendar_json).state.c_str());
+      JsonArray entries = doc.as<JsonArray>();
+
+      int current_y       = 250;
+      const int max_y     = 809;
+      const int top_pad   = 5;
+      const int ev_gap    = 10;
+      const int bot_pad   = 5;
+      const int day_gap   = 15;
+      const int time_x    = 520;
+      int max_title_len   = 30;
+      int max_sub_len     = 40;
+
+      for (JsonVariant entry : entries) {
+        int day_num        = entry["day"].as<int>();
+        const char* day_nm = entry["day_name"];
+
+        int day_num_h  = get_text_height(&it, id(font_medium_45), "%d", day_num);
+        int day_name_h = get_text_height(&it, id(font_medium_20), "%s", day_nm);
+
+        if (current_y + day_num_h + day_name_h > max_y) break;
+
+        it.printf(45, current_y,               id(font_medium_45), color_content, TextAlign::TOP_CENTER, "%d", day_num);
+        it.printf(45, current_y + day_num_h-4, id(font_medium_20), color_content, TextAlign::TOP_CENTER, "%s", day_nm);
+
+        int entry_y = current_y + top_pad;
+
+        auto drawEvent = [&](const JsonVariant& item) -> bool {
+          std::string summary     = item["summary"].as<std::string>();
+          const char* start       = item["start"];
+          const char* end         = item["end"];
+          const char* location_nm = item["location_name"];
+          const char* cal_nm      = item["calendar_name"];
+
+          int title_max = max_title_len;
+          int sub_max   = max_sub_len;
+
+          std::string start_time = start ? extract_time(start) : "";
+          std::string end_time   = end   ? extract_time(end)   : "";
+
+          if (start_time.empty()) {
+            // All-day event.
+            int days = days_between_dates(start, end);
+            if (days > 1) {
+              auto get_today = []() -> std::string {
+                auto now = id(homeassistant_time).now();
+                char buf[11];
+                sprintf(buf, "%d-%02d-%02d", now.year, now.month, now.day_of_month);
+                return std::string(buf);
+              };
+              if (start == get_today()) {
+                days--;
+                end_time = "left";
+              } else {
+                end_time = "long";
+              }
+              start_time = std::to_string(days) + (days > 1 ? " days" : " day");
+            } else {
+              title_max += 4;
+              sub_max   += 6;
+            }
+          }
+
+          std::string subtitle = std::string(cal_nm) +
+            (location_nm && strlen(location_nm) > 0 ? " · " + std::string(location_nm) : "");
+          if ((int)subtitle.length() > sub_max)
+            subtitle = subtitle.substr(0, sub_max - 3) + "...";
+          if ((int)summary.length() > title_max)
+            summary = summary.substr(0, title_max - 3) + "...";
+
+          int title_h = get_text_height(&it, id(font_bold_25),   "%s", summary.c_str());
+          int sub_h   = get_text_height(&it, id(font_medium_18), "%s", subtitle.c_str());
+
+          if (entry_y + title_h + sub_h + ev_gap > max_y) return false;
+
+          it.printf(100, entry_y, id(font_bold_25), color_content, TextAlign::TOP_LEFT, "%s", summary.c_str());
+          if (!start_time.empty())
+            it.printf(time_x, entry_y, id(font_bold_25), color_content, TextAlign::TOP_RIGHT, "%s", start_time.c_str());
+
+          entry_y += title_h + 2;
+
+          it.printf(100, entry_y, id(font_medium_18), color_content, TextAlign::TOP_LEFT, "%s", subtitle.c_str());
+          if (!end_time.empty())
+            it.printf(time_x, entry_y, id(font_medium_18), color_content, TextAlign::TOP_RIGHT, "%s", end_time.c_str());
+
+          entry_y += sub_h + ev_gap;
+          return true;
+        };
+
+        for (JsonVariant item : entry["all_day"].as<JsonArray>()) if (!drawEvent(item)) break;
+        for (JsonVariant item : entry["other"].as<JsonArray>())    if (!drawEvent(item)) break;
+
+        entry_y += bot_pad - ev_gap;
+        it.line(85, current_y, 85, entry_y, color_content);
+        current_y = entry_y + day_gap;
+      }
+
+      // ── Footer ────────────────────────────────────────────────────────────
+      auto footer_index = id(footer).active_index();
+      if (footer_index.has_value() && footer_index.value() == 0) {
+        // "Next Event" footer.
+        it.printf(10, screenHeight - 3 - 90 - 3, id(font_bold_22), color_content,
+                  TextAlign::BOTTOM_LEFT, "Next Appointment:");
+        it.filled_rectangle(0, screenHeight - 3 - 90, screenWidth, 3, color_content);
+        it.filled_rectangle(0, screenHeight - 88,     screenWidth, 88, color_content);
+
+        bool shown_event = false;
+        if (!entries.isNull() && entries.size() > 0) {
+          JsonObject first_day = entries[0];
+          // is_today is stored as int but may deserialise as float or string depending on JSON source.
+          int is_today = 0;
+          if (!first_day["is_today"].isNull()) {
+            if      (first_day["is_today"].is<int>())        is_today = first_day["is_today"].as<int>();
+            else if (first_day["is_today"].is<float>())      is_today = (int)first_day["is_today"].as<float>();
+            else if (first_day["is_today"].is<const char*>()) is_today = atoi(first_day["is_today"].as<const char*>());
+          }
+          if (is_today == 1 && first_day["other"].is<JsonArray>() && first_day["other"].size() > 0) {
+            JsonObject next = first_day["other"][0];
+            const char* summary     = next["summary"];
+            const char* start       = next["start"];
+            const char* end         = next["end"];
+            const char* location_nm = next["location_name"];
+            const char* cal_nm      = next["calendar_name"];
+
+            std::string start_t  = start ? extract_time(start) : "";
+            std::string end_t    = end   ? extract_time(end)   : "";
+            std::string subtitle = (location_nm != nullptr)
+              ? std::string(cal_nm) + " · " + std::string(location_nm)
+              : std::string(cal_nm);
+            if (subtitle.length() > 45) subtitle = subtitle.substr(0, 42) + "...";
+
+            it.printf(10,    screenHeight - 3 - 90, id(font_bold_32),   color_background, TextAlign::TOP_LEFT,    "%s", summary);
+            it.printf(12,    screenHeight - 88,     id(font_medium_22), color_background, TextAlign::BOTTOM_LEFT,  "%s", subtitle.c_str());
+            it.printf(time_x, screenHeight - 3 - 90, id(font_bold_32),  color_background, TextAlign::TOP_RIGHT,   "%s", start_t.c_str());
+            it.printf(time_x, screenHeight - 88,     id(font_medium_22),color_background, TextAlign::BOTTOM_RIGHT, "%s", end_t.c_str());
+            shown_event = true;
+          }
+        }
+        if (!shown_event) {
+          it.printf(screenWidth/2, screenHeight - 88, id(font_bold_32), color_background,
+                    TextAlign::TOP_CENTER, "No further appointments today");
+        }
+        it.printf(screenWidth/2, screenHeight - 25, id(font_medium_22), color_background,
+                  TextAlign::TOP_CENTER, "Updated: %s", id(device_current_time).state.c_str());
+      }
