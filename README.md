@@ -155,6 +155,7 @@ actions:
   - data:
       device_name: "{{ device_name }}"
       calendar: "{{ calendar_response }}"
+      calendar_entities: "{{ calendar_entities_str }}"
       calendar_names: "{{ calendar_names_str }}"
     action: pyscript.claudecalendar_data_conversion
 mode: queued

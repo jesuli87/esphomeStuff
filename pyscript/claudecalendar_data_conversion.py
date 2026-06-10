@@ -9,7 +9,7 @@ from homeassistant.util import dt as dt_util
 
 
 @service
-def claudecalendar_data_conversion(device_name=None, calendar=None, calendar_names=None, **kwargs):
+def claudecalendar_data_conversion(device_name=None, calendar=None, calendar_names=None, calendar_entities=None, **kwargs):
     """Processes raw HA calendar events and writes the result to HA state entities
     that the ESPHome device reads via platform: homeassistant.
 
@@ -33,18 +33,23 @@ def claudecalendar_data_conversion(device_name=None, calendar=None, calendar_nam
 
     Parameters
     ----------
-    device_name    : str   ESPHome device name (matches esphome.name in device YAML).
-    calendar       : dict  Raw response from calendar.get_events.
-    calendar_names : str   Comma-separated display names, positionally matched to the
-                           calendar entity IDs in the get_events response. Passed
-                           directly from the event data (device reads its own NVS).
+    device_name       : str   ESPHome device name (matches esphome.name in device YAML).
+    calendar          : dict  Raw response from calendar.get_events.
+    calendar_entities : str   Comma-separated calendar entity IDs in the order the user
+                              configured them on the device. Used as the positional anchor
+                              for name mapping — calendar.keys() order is not guaranteed to
+                              match the configured order, which would cause wrong names.
+    calendar_names    : str   Comma-separated display names, positionally matched to
+                              calendar_entities. Passed directly from the event data
+                              (device reads its own NVS).
     """
 
     logger = logging.getLogger("custom_components.pyscript.claudecalendar_data_conversion")
 
-    device_name    = kwargs.get("device_name",    device_name)
-    calendar       = kwargs.get("calendar",       calendar)
-    calendar_names = kwargs.get("calendar_names", calendar_names) or ""
+    device_name       = kwargs.get("device_name",       device_name)
+    calendar          = kwargs.get("calendar",           calendar)
+    calendar_entities = kwargs.get("calendar_entities",  calendar_entities) or ""
+    calendar_names    = kwargs.get("calendar_names",     calendar_names) or ""
 
     if not device_name:
         logger.error("'device_name' not provided.")
@@ -55,17 +60,26 @@ def claudecalendar_data_conversion(device_name=None, calendar=None, calendar_nam
 
     logger.debug(f"Processing calendar data for device '{device_name}'")
 
-    # Build {entity_id: display_name} from the comma-separated names string.
-    # Positional: calendar_names[i] maps to the i-th key in the calendar response.
-    # Missing entries fall back to the capitalised last segment of the entity ID.
-    names_list = [n.strip() for n in calendar_names.split(",") if n.strip()]
-    entity_ids  = list(calendar.keys())
+    # Build {entity_id: display_name} using the explicitly ordered entity ID list
+    # from the device config (calendar_entities) as the positional anchor.
+    # Using calendar.keys() order instead would risk wrong name assignments because
+    # HA's calendar.get_events response dict order is not guaranteed to match the
+    # order the user configured their calendars.
+    names_list   = [n.strip() for n in calendar_names.split(",")    if n.strip()]
+    entities_list = [e.strip() for e in calendar_entities.split(",") if e.strip()]
+
     calendar_names_map = {}
-    for i, eid in enumerate(entity_ids):
+    for i, eid in enumerate(entities_list):
         if i < len(names_list) and names_list[i]:
             calendar_names_map[eid] = names_list[i]
         else:
             calendar_names_map[eid] = eid.split(".")[1].capitalize()
+    # Cover any entity IDs in the response that were not in the configured list.
+    for eid in calendar.keys():
+        if eid not in calendar_names_map:
+            calendar_names_map[eid] = eid.split(".")[1].capitalize()
+
+    logger.debug(f"Calendar name map: {calendar_names_map}")
 
     today = dt_util.now().date().isoformat()
     events_by_date = {}
